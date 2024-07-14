@@ -170,3 +170,113 @@ export const refreshAccessToken = asyncHandler(async (req, res) => {
 
     }
 })
+
+export const changeCurrentPassword = asyncHandler(async (req, res) => {
+    const { currentPassword, oldPassword } = req.body
+
+    if (!currentPassword || !oldPassword) {
+        throw new ApiError(400, "Current password and old password are required")
+    }
+
+    const user = await User.findById(req.user?._id)
+
+    const isPasswordCorrect = user.isPasswordCorrect(oldPassword)
+
+    if (!isPasswordCorrect) {
+        throw new ApiError(400, "Old password is incorrect")
+    }
+
+    user.password = currentPassword
+    await user.save({ validateBeforeSave: false })
+
+    return res.status(200).json(new ApiResponse(200, {}, "Password changed successfully"))
+
+})
+
+export const getCurrentUser = asyncHandler(async (req, res) => {
+    const user = await User.findById(req.user?._id).select("-password -refreshToken")
+
+    return res.status(200).json(new ApiResponse(200, user, "User fetched successfully"))
+})
+
+export const updateAvatar = asyncHandler(async (req, res) => {
+    const localPath = req.file?.path
+
+    if (!localPath) {
+        throw new ApiError(400, "Avatar is required")
+    }
+
+    const avatar = await uploadOnCloudinary(localPath)
+
+    if (!avatar?.url) {
+        throw new ApiError(500, "Failed to upload avatar")
+    }
+
+    const updatedUser = await User.findByIdAndUpdate(req?.user?._id, { $set: { avatar: avatar.url } }, { new: true })
+        .select("-password -refreshToken")
+
+    return res.status(200).json(new ApiResponse(200, updatedUser, "Avatar updated successfully"))
+})
+
+export const getUserChannelProfile = asyncHandler(async (req, res) => {
+    const { username } = req.params
+
+    if (!username) {
+        throw new ApiError(400, "Username is required")
+    }
+
+    const channel = await User.aggregate([
+        {
+            $match: {
+                username: username?.trim()
+            }
+        },
+        {
+            $lookup: {
+                from: "subscriptions",
+                localField: "_id",
+                foreignField: "channel",
+                as: "subscribers"
+            }
+        },
+        {
+            $lookup: {
+                from: "subscriptions",
+                localField: "_id",
+                foreignField: "subscriber",
+                as: "subscribedTo"
+            }
+        },
+        {
+            $addFields: {
+                subscriberCount: { $size: "$subscribers" },
+                subscribedToCount: { $size: "$subscribedTo" },
+                isSubscribed: {
+                    $cond: {
+                        if: { $in: [req.user?._id, "$subscribers.subscriber"] },
+                        then: true,
+                        else: false
+                    }
+                }
+            }
+        },
+        {
+            $project: {
+                fullName: 1,
+                username: 1,
+                subscriberCount: 1,
+                subscribedToCount: 1,
+                isSubscribed: 1,
+                avatar: 1,
+                coverImage: 1,
+                email: 1
+            }
+        }
+    ])
+
+    if (!channel?.length) {
+        throw new ApiError(404, "Channel not found")
+    }
+
+    return res.status(200).json(new ApiResponse(200, channel: channel[0], "Channel fetched successfully"))
+})
